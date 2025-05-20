@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import cryptpandas as crp
 import hmac
+import pickle
 
 st.set_page_config(
     page_title="Automated Session Creation Visualization Tool - AIM 2025 (All Communities)",
@@ -10,176 +11,8 @@ st.set_page_config(
     layout="wide",
 )
 
-def calculate_cluster_similarities(similarity_matrix, labels):
-    """
-    Calculate average similarity of each document with others in its cluster
-    
-    Returns:
-    - document_similarities: Average similarity of each document with its cluster
-    - cluster_avg_similarities: Average similarity for each cluster
-    """
-    n_samples = len(labels)
-    document_similarities = np.zeros(n_samples)
-    cluster_avg_similarities = {}
-    
-    for i in range(n_samples):
-        # Get indices of other documents in the same cluster
-        cluster_idx = np.where(labels == labels[i])[0]
-        cluster_idx = cluster_idx[cluster_idx != i]  # Exclude self
-        
-        if len(cluster_idx) > 0:  # If there are other documents in the cluster
-            # Calculate average similarity with other documents in cluster
-            document_similarities[i] = np.mean(similarity_matrix[i, cluster_idx])
-        
-    # Calculate average similarity for each cluster
-    unique_clusters = np.unique(labels)
-    for cluster in unique_clusters:
-        cluster_mask = labels == cluster
-        cluster_docs = np.where(cluster_mask)[0]
-        
-        if len(cluster_docs) > 1:
-            cluster_similarities = []
-            for doc in cluster_docs:
-                other_docs = cluster_docs[cluster_docs != doc]
-                avg_sim = np.mean(similarity_matrix[doc, other_docs])
-                cluster_similarities.append(avg_sim)
-            cluster_avg_similarities[cluster] = np.mean(cluster_similarities)
-        else:
-            cluster_avg_similarities[cluster] = 0.0
-            
-    return document_similarities, cluster_avg_similarities
 
 st.title("Automated Session Creation Visualization Tool - AIM 2025 (All Communities)")
-
-def calculate_session_similarity(presentations, similarity_matrix, session_column='Original Session'):
-    """
-    Calculates the average similarity between presentations in different sessions.
-
-    Args:
-      presentations: A pandas DataFrame with presentation information.
-      similarity_matrix: A NumPy array representing the pairwise similarity between presentations.
-      session_column: The column name in the DataFrame that specifies the session.
-
-    Returns:
-      A tuple containing:
-        - A NumPy array representing the session-level similarity matrix.
-        - A NumPy array of unique session names in the order they appear in the similarity matrix.
-    """
-    # Create a new presentation dataframe that has constant indexing.
-    presentations = presentations.reset_index()
-    sessions = presentations[session_column].unique()
-    num_sessions = len(sessions)
-    session_similarity = np.zeros((num_sessions, num_sessions))
-
-    for i, session1 in enumerate(sessions):
-        for j, session2 in enumerate(sessions):
-            pres_idx1 = presentations[presentations[session_column] == session1].index
-            pres_idx2 = presentations[presentations[session_column] == session2].index
-            session_similarity[i, j] = np.mean(similarity_matrix[np.ix_(pres_idx1, pres_idx2)])
-
-    return session_similarity, sessions
-
-def analyze_sessions(sessions_dict, similarities):
-    """
-    Calculates statistics for sessions using a dictionary and a NumPy similarity matrix.
-
-    Args:
-        sessions_dict (dict): A dictionary where keys are session names 
-                              and values are lists of indices of items in that session.
-        similarities (np.ndarray): The cosine similarity matrix as a NumPy array.
-
-    Returns:
-        dict: A dictionary containing the calculated statistics:
-              - 'avg_similarity': Overall average similarity across sessions with > 1 item.
-              - 'min_session_similarity': Minimum average similarity found in any session with > 1 item.
-              - 'num_sessions': Total number of sessions.
-              - 'clusters_gt1': Number of sessions with more than one item.
-              - 'session_sizes': A dictionary mapping session names to their sizes.
-              - 'similarity_values': A dictionary mapping session names to their average internal similarity.
-    """
-    # Initialize dictionaries to store results for each session
-    session_similarities = {}
-    session_sizes = {}
-    clusters_gt1 = 0 # Counter for sessions with more than one item
-
-    # Iterate through each session in the input dictionary
-    for session_name, session_indices in sessions_dict.items():
-        # Store the size (number of items) of the current session
-        session_sizes[session_name] = len(session_indices)
-        
-        # Calculate similarity only for sessions with more than one item
-        if len(session_indices) > 1:
-            clusters_gt1 += 1 # Increment the counter for sessions > size 1
-            
-            # Use numpy advanced indexing (np.ix_) to extract the submatrix 
-            # corresponding to the current session's indices
-            session_similarity_matrix = similarities[np.ix_(session_indices, session_indices)]
-            
-            # Calculate the sum of the upper triangle of the submatrix (excluding the diagonal)
-            # This sums the similarities between unique pairs within the session
-            similarity_sum = np.sum(np.triu(session_similarity_matrix, k=1))
-            
-            # Calculate the number of unique pairs in the session
-            num_pairs = len(session_indices) * (len(session_indices) - 1) / 2
-            
-            # Calculate the average similarity for the session
-            # Handle the case where num_pairs might be zero (although guarded by len > 1 check)
-            avg_session_similarity = similarity_sum / num_pairs if num_pairs > 0 else 0.0
-            
-            # Store the calculated average similarity for the session
-            session_similarities[session_name] = avg_session_similarity
-            
-        # For sessions with only one item, similarity is not meaningful (set to 0)
-        elif len(session_indices) == 1:
-            session_similarities[session_name] = 0.0 
-        # For empty sessions, similarity is 0
-        else:
-            session_similarities[session_name] = 0.0 
-
-    # Calculate the overall average similarity and minimum similarity across sessions with > 1 item.
-    # Iterate through the calculated similarities, checking the original session size.
-    valid_similarities = [
-        sim for session_name, sim in session_similarities.items() 
-        if len(sessions_dict.get(session_name, [])) > 1 
-    ] # Filter to include only similarities from sessions with more than one item.
-    
-    overall_avg_similarity = np.mean(valid_similarities) if valid_similarities else 0.0
-    min_session_similarity = min(valid_similarities) if valid_similarities else 0.0
-
-    # Compile the results into a dictionary
-    results = {
-        'avg_similarity': overall_avg_similarity,
-        'min_session_similarity': min_session_similarity,
-        'num_sessions': len(sessions_dict),
-        'clusters_gt1': clusters_gt1,
-        'session_sizes': session_sizes, # Dictionary of session_name: size
-        'similarity_values': session_similarities, # Dictionary of session_name: avg_similarity
-    }
-
-    return results
-
-def create_session_index_lists(oral_df, session_column='Original Session'):
-    """
-    Creates a list of lists, where each inner list contains the indices of presentations
-    assigned to a particular session.
-
-    Args:
-        oral_df (pd.DataFrame): The DataFrame containing presentation data.
-        session_column (str): The name of the column containing session names.
-
-    Returns:
-        list: A list of lists, where each inner list contains indices for a session.
-        dict: A dictionary mapping session names to their corresponding indices.
-    """
-    # Reset index to ensure consistent indexing (similarity tensor is re-indexed)
-    oral_df.reset_index(drop=True, inplace=True)  
-    session_indices = {}
-    for index, session in oral_df[session_column].items():
-        if session not in session_indices:
-            session_indices[session] = []
-        session_indices[session].append(index)
-
-    return list(session_indices.values()), session_indices
 
 st.subheader("Data Retrieval Date: January 29, 2025")
 st.write("**NOTE:** ***This sort is based on the initial submission of titles, abstracts and session placement before session organization process.***")
@@ -212,78 +45,28 @@ if st.session_state.get("password_correct", False):
     df_presentations = crp.read_encrypted(path='encrypted_df.crypt', password=st.secrets['df_password'])
 else:
     df_presentations = pd.read_pickle("aim2025_clustered_presentations_no_abstracts.pkl")
-# Drop the unnecessary "index" column if it exists
-if 'index' in df_presentations.columns:
-    df_presentations = df_presentations.drop(columns=['index'])
-# Load sessions next
-df_AI_sessions = pd.read_pickle("AI_sessionsAIM25.pkl")
-# Load the similarity matrix
+
+# Load the similarity matrix for presentations
 df_similarity = pd.read_pickle("oral_app_similarities.pkl")
 
-# Calculate statistics for the original session placements
-# Create a session similarity matrix that contains the similarities from the original sessions.
-orig_session_similarity_matrix, sessions = calculate_session_similarity(df_presentations, df_similarity.to_numpy(), session_column='Original Session')
-df_orig_session_similarity = pd.DataFrame(orig_session_similarity_matrix, index=sessions, columns=sessions)
+# Load the analysis results dictionaries
+with open('Cluster_analysis_resultsAIM25.pkl', 'rb') as f:
+    cluster_analysis_results = pickle.load(f)
+    
+with open('Original_analysis_resultsAIM25.pkl', 'rb') as f:
+    original_analysis_results = pickle.load(f)
+# Load the session lists
+with open('cluster_session_list.pkl', 'rb') as f:
+    cluster_session_list = pickle.load(f)
+    
+with open('original_session_list.pkl', 'rb') as f:
+    original_session_list = pickle.load(f)
 
-pres_orig_session_similarity, orig_session_similarity = calculate_cluster_similarities(df_similarity.to_numpy(), np.array(df_presentations['Original Session']))
-original_session_list, original_session_dict = create_session_index_lists(df_presentations, session_column='Original Session')
-original_analysis_results = analyze_sessions(original_session_dict, df_similarity.to_numpy())
-df_presentations['Original Presentation-Session Similarity'] = pres_orig_session_similarity
-df_presentations['Original Session Similarity'] = df_presentations['Original Session'].map(orig_session_similarity)
-
-# Calculate standard deviation for each 'Original Session'
-df_presentations['Original Session Std Dev'] = df_presentations.groupby('Original Session')['Original Presentation-Session Similarity'].transform('std')
-# Calculate deviation from the mean
-df_presentations['Original Raw Deviation'] = df_presentations['Original Presentation-Session Similarity'] - df_presentations['Original Session Similarity']
-# Calculate standardized deviation
-df_presentations['Original Standardized Deviation'] = df_presentations['Original Raw Deviation'] / df_presentations['Original Session Std Dev']
-
-# Create the Original Sessions DataFrame
-df_sessions = df_presentations[['Original Session', 'Original Session Similarity', 'Original Session Std Dev']].copy()
-# Drop duplicate rows, keeping only the first instance, then reindex.
-df_sessions.drop_duplicates(subset=['Original Session'], keep='first', inplace=True)
-df_sessions = df_sessions.reset_index(drop=True)
-
-# Calculate statistics for the clustering session placements
-# Create a session similarity matrix that contains the similarities from the clustering sessions.
-clustering_session_similarity_matrix, clustering_sessions = calculate_session_similarity(df_presentations, df_similarity.to_numpy(), session_column='Clustering Session')
-df_clustering_session_similarity = pd.DataFrame(clustering_session_similarity_matrix, index=clustering_sessions, columns=clustering_sessions)
-
-pres_clustering_session_similarity, clustering_session_similarity = calculate_cluster_similarities(df_similarity.to_numpy(), np.array(df_presentations['Clustering Session']))
-cluster_session_list, cluster_session_dict = create_session_index_lists(df_presentations, session_column='Clustering Session')
-cluster_analysis_results = analyze_sessions(cluster_session_dict, df_similarity.to_numpy())
-df_presentations['Presentation-Session Similarity - Clustering'] = pres_clustering_session_similarity
-df_presentations['Session Similarity - Clustering'] = df_presentations['Clustering Session'].map(clustering_session_similarity)
-
-# Calculate standard deviation for each 'Clustering Session'
-df_presentations['Session Std Dev - Clustering'] = df_presentations.groupby('Clustering Session')['Presentation-Session Similarity - Clustering'].transform('std')
-# Calculate deviation from the mean
-df_presentations['Raw Deviation - Clustering'] = df_presentations['Presentation-Session Similarity - Clustering'] - df_presentations['Session Similarity - Clustering']
-# Calculate standardized deviation
-df_presentations['Standardized Deviation - Clustering'] = df_presentations['Raw Deviation - Clustering'] / df_presentations['Session Std Dev - Clustering']
-
-# Create the Clustering Sessions DataFrame
-df_clustering_sessions = df_presentations[['Clustering Session', 'Session Similarity - Clustering', 'Session Std Dev - Clustering']].copy()
-# Drop duplicate rows, keeping only the first instance, then reindex.
-df_clustering_sessions.drop_duplicates(subset=['Clustering Session'], keep='first', inplace=True)
-df_clustering_sessions = df_clustering_sessions.reset_index(drop=True)
-# Exclude 'Indices' and 'Presentations' columns from df_AI_sessions
-columns_to_merge = [col for col in df_AI_sessions.columns if col not in ['Indices', 'Presentations']]
-
-# Merge the data from df_AI_sessions into df_clustering_sessions
-df_clustering_sessions = df_clustering_sessions.merge(
-    df_AI_sessions[columns_to_merge], 
-    left_on='Clustering Session', 
-    right_index=True, 
-    how='left'
-)
-
-# Update column names for display
-df_clustering_sessions = df_clustering_sessions.rename(
-    columns=lambda col: col.replace(" MinEx ", " Minimal Example ")
-                           .replace(" NoEx ", " No Example ")
-                           .replace(" Ex ", " Complete Example ")  # Add a space before and after "Ex" to avoid partial matches
-)
+# Load the session information
+df_clustering_sessions = pd.read_pickle('AI_sessionsAIM25.pkl')
+df_sessions = pd.read_pickle('Original_sessionsAIM25.pkl')
+df_clustering_session_similarity = pd.read_pickle('Clustering_session_similarityAIM25.pkl')
+df_orig_session_similarity = pd.read_pickle('Original_session_similarityAIM25.pkl')
 
 
 tab_clustered_session, tab_orig_session, tab_pres =  st.tabs(['View Clustered Sessions', 'View Original Sessions', 'View Presentations'])
