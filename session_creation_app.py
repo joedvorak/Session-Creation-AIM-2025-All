@@ -114,10 +114,12 @@ with tab_clustered_session:
     event_clustered_session = st.dataframe(
             df_clustering_sessions,
             use_container_width=True,
-            column_order=["Clustering Session", 'Session Similarity - Clustering', 'Session Std Dev - Clustering'],
+            column_order=["Clustering Session", 'Gemini Minimal Example Title 1', 'Gemini Minimal Example Keywords', 'Top Committee Match', 'Top Committee Similarity', '2nd Committee Match', '2nd Committee Similarity', '3rd Committee Match', '3rd Committee Similarity', 'Session Similarity - Clustering'],
             column_config={
                 "Session Similarity - Clustering" : st.column_config.NumberColumn(format='%.3f'),
-                "Session Std Dev - Clustering" : st.column_config.NumberColumn(format='%.3f'),
+                "Top Committee Similarity" : st.column_config.NumberColumn(format='%.3f'),
+                "2nd Committee Similarity" : st.column_config.NumberColumn(format='%.3f'),
+                "3rd Committee Similarity" : st.column_config.NumberColumn(format='%.3f'),
             },
             on_select="rerun",
             selection_mode="single-row",
